@@ -10,109 +10,18 @@
 
 // #define RAW_SOCKET_CONNECT_TRY_ONCE
 
-static inline void print_info(const char * info) {
-    printf("[Module Socket] %s\n", info);
+static inline void print_info(const char *info) {
+    printf("[Module PIE] %s\n", info);
     return;
 }
 
-static inline void print_error(const char * info) {
+static inline void print_error(const char *info) {
     print_info(info);
     printf("[System] %s\n", strerror(errno));
     return;
 }
 
-static inline int recv_data(const int sock_fd, void *data, const size_t size) {
-    size_t progress = 0;
-    while (progress < size) {
-        int ret = recv(sock_fd, (char *)data + progress, size - progress, 0);
-        if (ret < 0) {
-            if (errno == EINTR) {
-                continue;  // Retry
-            } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                continue;  // Asynchronous socket
-            } else {
-                print_error("recv_data failed");
-                return -1;
-            }
-        } else if (ret == 0) {
-            print_info("recv_data failed: connection closed");
-            return -1;
-        }
-        progress += ret;
-    }
-    return 0;
-}
-
-static inline int send_data(const int sock_fd, void *data, const size_t size) {
-    size_t progress = 0;
-    while (progress < size) {
-        int ret = send(sock_fd, (char *)data + progress, size - progress, MSG_NOSIGNAL);
-        if (ret < 0) {
-            if (errno == EINTR) {
-                continue;  // Retry
-            } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                continue;  // Asynchronous socket
-            } else {
-                print_error("send_data failed");
-                return -1;
-            }
-        } else if (ret == 0) {
-            print_info("send_data failed: connection closed");
-            return -1;
-        }
-        progress += ret;
-    }
-    return 0;
-}
-
-static int create_tcp_socket(const char *ip_addr, const uint16_t port,
-                             sockaddr_in *sock_addr) {
-    if (!ip_addr) {
-        print_info("Create socket failed: ip_addr is nullptr");
-        return -1;
-    }
-    if (!sock_addr) {
-        print_info("Create socket failed: sock_addr is nullptr");
-        return -1;
-    }
-    int ret = 0;
-    int on = 1;
-    int sock_fd = socket(PF_INET, SOCK_STREAM, 0);
-    if (sock_fd < 0) {
-        print_error("Create socket failed: socket()");
-        return -1;
-    }
-    ret = setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-    if (ret < 0) {
-        print_error("Create socket failed: setsockopt()");
-        return -1;
-    }
-    sock_addr->sin_family = AF_INET;
-    sock_addr->sin_port = htons(port);
-    sock_addr->sin_addr.s_addr = inet_addr(ip_addr);
-    if (sock_addr->sin_addr.s_addr == INADDR_NONE) {
-        print_error("Create socket failed: inet_addr()");
-        return -1;
-    }
-    return sock_fd;
-}
-
-static int set_tcp_nonblocking(int sock_fd) {
-    if (sock_fd < 0) {
-        print_info("Set socket nonblocking failed: no available socket");
-        return -1;
-    }
-    int flags = fcntl(sock_fd, F_GETFL, 0);
-    if (flags < 0) {
-        print_error("Set socket nonblocking failed: GETFL");
-        return -1;
-    }
-    if (fcntl(sock_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
-        print_error("Set socket nonblocking failed: SETFL");
-        return -1;
-    }
-    return 0;
-}
+namespace pie {
 
 PieSocket::PieSocket() {
     ;
@@ -122,11 +31,11 @@ PieSocket::~PieSocket() {
     ;
 }
 
-int PieSocket::ConnectServer(const char *ip_addr, const uint16_t port) {
+int PieSocket::ConnectServer(const char *ip_addr, uint16_t port) {
     int ret = 0;
     sockaddr_in sock_addr;
     memset(&sock_addr, 0, sizeof(sockaddr_in));
-    int sock_fd = create_tcp_socket(ip_addr, port, &sock_addr);
+    int sock_fd = CreateSocket(ip_addr, port, &sock_addr);
     if (sock_fd < 0) {
         return -1;
     }
@@ -165,11 +74,11 @@ int PieSocket::DisconnectServer(int sock_fd) {
     return 0;
 }
 
-int PieSocket::Listen(int max_conn, const char *ip_addr, const uint16_t port) {
+int PieSocket::Listen(int max_conn, const char *ip_addr, uint16_t port) {
     int ret = 0;
     sockaddr_in sock_addr;
     memset(&sock_addr, 0, sizeof(sockaddr_in));
-    int sock_fd = create_tcp_socket(ip_addr, port, &sock_addr);
+    int sock_fd = CreateSocket(ip_addr, port, &sock_addr);
     if (sock_fd < 0) {
         return -1;
     }
@@ -250,11 +159,11 @@ int PieSocket::FinishClient(int sock_fd) {
 int PieSocket::SendBuf(int sock_fd, void *buffer, uint64_t size) {
     uint64_t data_volume = size;
     // NOTE: we may need htonll here !
-    if (send_data(sock_fd, &data_volume, sizeof(uint64_t))) {
+    if (SendData(sock_fd, &data_volume, sizeof(uint64_t))) {
         print_error("Fail to send buffer header");
         return -1;
     }
-    if (send_data(sock_fd, buffer, size)) {
+    if (SendData(sock_fd, buffer, size)) {
         print_error("Fail to send buffer payload");
         return -1;
     }
@@ -263,7 +172,7 @@ int PieSocket::SendBuf(int sock_fd, void *buffer, uint64_t size) {
 
 int PieSocket::RecvBuf(int sock_fd, void *buffer, uint64_t *size) {
     uint64_t data_volume = 0;
-    if (recv_data(sock_fd, &data_volume, sizeof(uint64_t))) {
+    if (RecvData(sock_fd, &data_volume, sizeof(uint64_t))) {
         print_error("Fail to recv buffer header");
         return -1;
     }
@@ -272,7 +181,7 @@ int PieSocket::RecvBuf(int sock_fd, void *buffer, uint64_t *size) {
         return -1;
     }
     // NOTE: we may need ntohll here !
-    if (recv_data(sock_fd, buffer, data_volume)) {
+    if (RecvData(sock_fd, buffer, data_volume)) {
         print_error("Fail to recv buffer payload");
         return -1;
     }
@@ -285,8 +194,8 @@ int PieSocket::EpollLaunch() {
         print_info("Register epoll failed: no available socket");
         return -1;
     }
-    if (set_tcp_nonblocking(listen_fd_) < 0) {
-        print_info("Register epoll failed: set_tcp_nonblocking()");
+    if (EnableNonblocking(listen_fd_) < 0) {
+        print_info("Register epoll failed: EnableNonblocking()");
         return -1;
     }
     epoll_fd_ = epoll_create(max_conn_);
@@ -356,6 +265,99 @@ int PieSocket::EpollRetrive() {
     return res_num;
 }
 
+int PieSocket::EnableNonblocking(int sock_fd) {
+    if (sock_fd < 0) {
+        print_info("Set socket nonblocking failed: no available socket");
+        return -1;
+    }
+    int flags = fcntl(sock_fd, F_GETFL, 0);
+    if (flags < 0) {
+        print_error("Set socket nonblocking failed: GETFL");
+        return -1;
+    }
+    if (fcntl(sock_fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        print_error("Set socket nonblocking failed: SETFL");
+        return -1;
+    }
+    return 0;
+}
+
+int PieSocket::CreateSocket(const char *ip_addr, uint16_t port,
+                            sockaddr_in *sock_addr) {
+    if (!ip_addr) {
+        print_info("Create socket failed: ip_addr is nullptr");
+        return -1;
+    }
+    if (!sock_addr) {
+        print_info("Create socket failed: sock_addr is nullptr");
+        return -1;
+    }
+    int ret = 0;
+    int on = 1;
+    int sock_fd = socket(PF_INET, SOCK_STREAM, 0);
+    if (sock_fd < 0) {
+        print_error("Create socket failed: socket()");
+        return -1;
+    }
+    ret = setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+    if (ret < 0) {
+        print_error("Create socket failed: setsockopt()");
+        return -1;
+    }
+    sock_addr->sin_family = AF_INET;
+    sock_addr->sin_port = htons(port);
+    sock_addr->sin_addr.s_addr = inet_addr(ip_addr);
+    if (sock_addr->sin_addr.s_addr == INADDR_NONE) {
+        print_error("Create socket failed: inet_addr()");
+        return -1;
+    }
+    return sock_fd;
+}
+
+int PieSocket::RecvData(int sock_fd, void *data, size_t size) {
+    size_t progress = 0;
+    while (progress < size) {
+        int ret = recv(sock_fd, (char *)data + progress, size - progress, 0);
+        if (ret < 0) {
+            if (errno == EINTR) {
+                continue;  // Retry
+            } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;  // Asynchronous socket
+            } else {
+                print_error("RecvData failed");
+                return -1;
+            }
+        } else if (ret == 0) {
+            print_info("RecvData failed: connection closed");
+            return -1;
+        }
+        progress += ret;
+    }
+    return 0;
+}
+
+int PieSocket::SendData(int sock_fd, void *data, size_t size) {
+    size_t progress = 0;
+    while (progress < size) {
+        int ret = send(sock_fd, (char *)data + progress, size - progress, MSG_NOSIGNAL);
+        if (ret < 0) {
+            if (errno == EINTR) {
+                continue;  // Retry
+            } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                continue;  // Asynchronous socket
+            } else {
+                print_error("SendData failed");
+                return -1;
+            }
+        } else if (ret == 0) {
+            print_info("SendData failed: connection closed");
+            return -1;
+        }
+        progress += ret;
+    }
+    return 0;
+}
+
 int PieSocket::EpollInitialize() {
     int client_fd = accept4(listen_fd_, nullptr, nullptr, SOCK_NONBLOCK);
     if (client_fd < 0) {
@@ -367,18 +369,21 @@ int PieSocket::EpollInitialize() {
             return -1;
         }
     }
+    living_conn_.fetch_add(1);
     EpollCoreContext *context = new EpollCoreContext(client_fd);
-    epoll_init_handler_(epoll_udata_, context->GetUserContext());
+    void *next_ctx = epoll_init_handler_(sock_ctx_,
+                                         context->GetTaskContext(),
+                                         context->GetBuffer());
+    context->SetTaskContext(next_ctx);
     context->ResetBuffer();
-    EpollState state = context->GetState();
-    if (state == kEpollStateError) {
+    if (context->IsError()) {
         print_info("Accept failed: InitHandler()");
         EpollComplete(context);
     } else {
         epoll_event new_event;
         memset(&new_event, 0, sizeof(epoll_event));
         new_event.data.fd = client_fd;
-        new_event.events = (state == kEpollStateSend) ? EPOLLOUT : EPOLLIN;
+        new_event.events = (context->IsSend()) ? EPOLLOUT : EPOLLIN;
         new_event.data.ptr = context;
         if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, client_fd, &new_event) < 0) {
             print_error("Accept failed: epoll_ctl()");
@@ -394,13 +399,15 @@ void PieSocket::EpollSend(EpollCoreContext *context) {
         print_error("Epoll-out failed: SendData()");
         EpollComplete(context);
     } else if (ret > 0) {
-        epoll_send_handler_(epoll_udata_, context->GetUserContext());
+        void *next_ctx = epoll_send_handler_(sock_ctx_,
+                                             context->GetTaskContext(),
+                                             context->GetBuffer());
+        context->SetTaskContext(next_ctx);
         context->ResetBuffer();
-        EpollState state = context->GetState();
-        if (state == kEpollStateError) {
+        if (context->IsError()) {
             print_info("Epoll-out failed: SendHandler()");
             EpollComplete(context);
-        } else if (state != kEpollStateSend) {
+        } else if (!context->IsSend()) {
             int client_fd = context->GetFd();
             epoll_event new_event;
             memset(&new_event, 0, sizeof(epoll_event));
@@ -421,13 +428,15 @@ void PieSocket::EpollRecv(EpollCoreContext *context) {
         print_error("Epoll-in failed: RecvData()");
         EpollComplete(context);
     } else if (ret > 0) {
-        epoll_recv_handler_(epoll_udata_, context->GetUserContext());
+        void *next_ctx = epoll_recv_handler_(sock_ctx_,
+                                             context->GetTaskContext(),
+                                             context->GetBuffer());
+        context->SetTaskContext(next_ctx);
         context->ResetBuffer();
-        EpollState state = context->GetState();
-        if (state == kEpollStateError) {
+        if (context->IsError()) {
             print_info("Epoll-in failed: RecvHandler()");
             EpollComplete(context);
-        } else if (state == kEpollStateSend) {
+        } else if (context->IsSend()) {
             int client_fd = context->GetFd();
             epoll_event new_event;
             memset(&new_event, 0, sizeof(epoll_event));
@@ -444,7 +453,7 @@ void PieSocket::EpollRecv(EpollCoreContext *context) {
 
 int PieSocket::EpollCheck(EpollCoreContext *context) {
     int ret = 0;
-    if (context->GetState() == kEpollStateComp) {
+    if (context->IsComp()) {
         ret = context->TryComplete();
         if (ret != 0) {
             EpollComplete(context);
@@ -458,10 +467,15 @@ int PieSocket::EpollCheck(EpollCoreContext *context) {
 
 void PieSocket::EpollComplete(EpollCoreContext *context) {
     int client_fd = context->GetFd();
-    epoll_comp_handler_(epoll_udata_, context->GetUserContext());
+    epoll_comp_handler_(sock_ctx_,
+                        context->GetTaskContext(),
+                        context->GetBuffer());
     delete context;
     if (client_fd >= 0) {
         close(client_fd);
         epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, client_fd, nullptr);
     }
+    living_conn_.fetch_sub(1);
+}
+
 }

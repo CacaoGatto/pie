@@ -19,64 +19,67 @@ struct ServerContext {
     uint32_t stage = kServerStageRecvHead;
 };
 
-void init_handler(void *udata, PieSocket::EpollUserContext *ctx) {
-    (void)udata;
+void *init_handler(void *sock_ctx, void *task_ctx, pie::EpollBuffer &buffer) {
+    (void)sock_ctx;
     ServerContext *sc = new ServerContext;
-    ctx->buffer.SetAddr(sc->buffer).SetSize(32).SetRecv();
-    ctx->context = sc;
+    buffer.SetAddr(sc->buffer).SetSize(32).SetRecv();
+    return sc;
 }
 
-void send_handler(void *udata, PieSocket::EpollUserContext *ctx) {
-    (void)udata;
-    ServerContext *sc = (ServerContext *)ctx->context;
+void *send_handler(void *sock_ctx, void *task_ctx, pie::EpollBuffer &buffer) {
+    (void)sock_ctx;
+    ServerContext *sc = (ServerContext *)task_ctx;
     switch (sc->stage) {
     case kServerStageSendHead:
-        ctx->buffer.SetAddr(sc->buffer).SetSize(32).SetRecv();
+        buffer.SetAddr(sc->buffer).SetSize(32).SetRecv();
         break;
     case kServerStageSendTail:
-        ctx->buffer.SetComp();
+        buffer.SetComp();
         break;
     default:
         break;
     }
     sc->stage += 1;
+    return sc;
 }
 
-void recv_handler(void *udata, PieSocket::EpollUserContext *ctx) {
-    (void)udata;
-    ServerContext *sc = (ServerContext *)ctx->context;
+void *recv_handler(void *sock_ctx, void *task_ctx, pie::EpollBuffer &buffer) {
+    (void)sock_ctx;
+    ServerContext *sc = (ServerContext *)task_ctx;
     switch (sc->stage) {
     case kServerStageRecvHead:
         printf("%s", sc->buffer);
-        ctx->buffer.SetAddr(server_string_1).SetSize(16).SetSend();
+        buffer.SetAddr(server_string_1).SetSize(16).SetSend();
         break;
     case kServerStageRecvTail:
         printf("%s", sc->buffer);
-        ctx->buffer.SetAddr(server_string_2).SetSize(16).SetSend();
+        buffer.SetAddr(server_string_2).SetSize(16).SetSend();
         break;
     default:
         break;
     }
     sc->stage += 1;
+    return sc;
 }
 
-void comp_handler(void *udata, PieSocket::EpollUserContext *ctx) {
-    (void)udata;
-    ServerContext *sc = (ServerContext *)ctx->context;
+void *comp_handler(void *sock_ctx, void *task_ctx, pie::EpollBuffer &buffer) {
+    (void)sock_ctx;
+    ServerContext *sc = (ServerContext *)task_ctx;
     delete sc;
+    return nullptr;
 }
 
 int main() {
     char *ip = getenv("TEST_PIE_SERVER_IP");
     int conn = atoi(getenv("TEST_PIE_CONN_NUM"));
     printf ("%d\n", conn);
-    PieSocket socket;
+    pie::PieSocket socket;
     socket.Listen(conn, ip);
     socket.RegisterInit(init_handler)
           .RegisterSend(send_handler)
           .RegisterRecv(recv_handler)
           .RegisterComp(comp_handler)
-          .RegisterUdata(nullptr)
+          .RegisterContext(nullptr)
           .EpollLaunch();
     while (conn > 0) {
         int ret = socket.EpollRetrive();

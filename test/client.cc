@@ -11,7 +11,7 @@ char client_string_2[] = "I'm the Client\n";
 void *client(void *ip) {
     char buffer[32];
     uint64_t size = 32;
-    PieSocket socket;
+    pie::PieSocket socket;
     int fd = socket.ConnectServer((char *)ip);
     socket.SendBuf(fd, client_string_1, sizeof(client_string_1));
     socket.RecvBuf(fd, buffer, &size);

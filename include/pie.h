@@ -2,51 +2,50 @@
 #define PLUGGED_IN_EPOLL_SOCKET_H
 
 #include <cstdint>
-#include <errno.h>
+#include <cerrno>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <arpa/inet.h>
+#include <atomic>
 
-class PieSocket {
+namespace pie {
+
+class EpollBuffer {
+    friend class PieSocket;
+public:
+    EpollBuffer &SetSend() { state_ = kEpollStateSend; return *this; }
+    EpollBuffer &SetRecv() { state_ = kEpollStateRecv; return *this; }
+    EpollBuffer &SetComp() { state_ = kEpollStateComp; return *this; }
+    EpollBuffer &SetSize(uint64_t size) { size_ = size; return *this; }
+    EpollBuffer &SetAddr(void *addr) { addr_ = addr; return *this; }
+    uint64_t GetSize() { return size_; }
+    void *GetAddr() { return addr_; }
 private:
+    EpollBuffer() {}
+    ~EpollBuffer() {}
+    uint64_t size_ = 0;
+    void *addr_ = nullptr;
     enum EpollState {
         kEpollStateError = -1,
         kEpollStateComp = 0,
         kEpollStateRecv,
         kEpollStateSend
-    };
+    } state_ = kEpollStateComp;
+};
 
+typedef void *(*EpollHandler)(void *sock_ctx, void *task_ctx, EpollBuffer &buffer);
+
+class PieSocket {
 public:
-    class PieBuffer {
-        friend class PieSocket;
-    public:
-        PieBuffer &SetSend() { state_ = kEpollStateSend; return *this; }
-        PieBuffer &SetRecv() { state_ = kEpollStateRecv; return *this; }
-        PieBuffer &SetComp() { state_ = kEpollStateComp; return *this; }
-        PieBuffer &SetSize(uint64_t size) { size_ = size; return *this; }
-        PieBuffer &SetAddr(void *addr) { addr_ = addr; return *this; }
-        uint64_t GetSize() { return size_; }
-        void *GetAddr() { return addr_; }
-    private:
-        PieBuffer() {}
-        ~PieBuffer() {}
-        uint64_t size_ = 0;
-        void *addr_ = nullptr;
-        EpollState state_ = kEpollStateComp;
-    };
-
-    struct EpollUserContext {
-        PieBuffer buffer;
-        void *context = nullptr;
-    };
-
     PieSocket();
     ~PieSocket();
 
-    int ConnectServer(const char *ip_addr, const uint16_t port = kPieDefaultPort);
+    int ConnectServer(const char *ip_addr, uint16_t port = kPieDefaultPort);
     int DisconnectServer(int sock_fd);
 
-    int Listen(int max_conn, const char *ip_addr, const uint16_t port = kPieDefaultPort);
+    int Listen(int max_conn, const char *ip_addr, uint16_t port = kPieDefaultPort);
     int StopListen();
+    inline int GetClientCount() { return living_conn_.load(); }
 
     int AcceptClient();
     int FinishClient(int sock_fd);
@@ -54,24 +53,24 @@ public:
     int SendBuf(int sock_fd, void *buffer, uint64_t size);
     int RecvBuf(int sock_fd, void *buffer, uint64_t *size);
 
-    PieSocket &RegisterInit(void (*handler)(void *udata, EpollUserContext *ctx)) {
+    PieSocket &RegisterInit(EpollHandler handler) {
         epoll_init_handler_ = handler;
         return *this;
     }
-    PieSocket &RegisterSend(void (*handler)(void *udata, EpollUserContext *ctx)) {
+    PieSocket &RegisterSend(EpollHandler handler) {
         epoll_send_handler_ = handler;
         return *this;
     }
-    PieSocket &RegisterRecv(void (*handler)(void *udata, EpollUserContext *ctx)) {
+    PieSocket &RegisterRecv(EpollHandler handler) {
         epoll_recv_handler_ = handler;
         return *this;
     }
-    PieSocket &RegisterComp(void (*handler)(void *udata, EpollUserContext *ctx)) {
+    PieSocket &RegisterComp(EpollHandler handler) {
         epoll_comp_handler_ = handler;
         return *this;
     }
-    PieSocket &RegisterUdata(void *udata) {
-        epoll_udata_ = udata;
+    PieSocket &RegisterContext(void *ctx) {
+        sock_ctx_ = ctx;
         return *this;
     }
 
@@ -82,17 +81,25 @@ private:
     class EpollCoreContext {
     public:
         EpollCoreContext(int32_t sock_fd) : sock_fd_(sock_fd) {
-            ucontext_ = new EpollUserContext;
             ResetBuffer();
         }
         ~EpollCoreContext() {
-            delete ucontext_;
         }
-        inline EpollUserContext *GetUserContext() { return ucontext_; }
+        inline void SetTaskContext(void *ctx) { task_ctx_ = ctx; }
+        inline void *GetTaskContext() const { return task_ctx_; }
+        inline EpollBuffer &GetBuffer() { return buffer_; }
         inline int32_t GetFd() const { return sock_fd_; }
-        inline EpollState GetState() { return ucontext_->buffer.state_; }
+        inline bool IsError() const {
+            return buffer_.state_ == EpollBuffer::kEpollStateError;
+        }
+        inline bool IsSend() const {
+            return buffer_.state_ == EpollBuffer::kEpollStateSend;
+        }
+        inline bool IsComp() const {
+            return buffer_.state_ == EpollBuffer::kEpollStateComp;
+        }
         inline void ResetBuffer() {
-            ctrl_ptr_ = &ucontext_->buffer.size_;
+            ctrl_ptr_ = &buffer_.size_;
             ctrl_size_ = sizeof(uint64_t);
             msg_size_done_ = false;
         }
@@ -103,8 +110,8 @@ private:
                     return ret;
                 }
                 msg_size_done_ = true;
-                ctrl_size_ = ucontext_->buffer.size_;
-                ctrl_ptr_ = ucontext_->buffer.addr_;
+                ctrl_size_ = buffer_.size_;
+                ctrl_ptr_ = buffer_.addr_;
                 ret = recv_once();
             }
             return ret;
@@ -116,8 +123,8 @@ private:
                     return ret;
                 }
                 msg_size_done_ = true;
-                ctrl_size_ = ucontext_->buffer.size_;
-                ctrl_ptr_ = ucontext_->buffer.addr_;
+                ctrl_size_ = buffer_.size_;
+                ctrl_ptr_ = buffer_.addr_;
                 ret = send_once();
             }
             return ret;
@@ -138,7 +145,8 @@ private:
         }
     private:
         const int32_t sock_fd_ = -1;
-        EpollUserContext *ucontext_;
+        EpollBuffer buffer_;
+        void *task_ctx_ = nullptr;
         uint64_t ctrl_size_;
         void *ctrl_ptr_;
         bool msg_size_done_;
@@ -184,12 +192,19 @@ private:
     int listen_fd_ = -1;
     int epoll_fd_ = -1;
     int max_conn_ = -1;
+    std::atomic<int> living_conn_{0};
 
-    void (*epoll_init_handler_)(void *udata, EpollUserContext *ctx) = nullptr;
-    void (*epoll_recv_handler_)(void *udata, EpollUserContext *ctx) = nullptr;
-    void (*epoll_send_handler_)(void *udata, EpollUserContext *ctx) = nullptr;
-    void (*epoll_comp_handler_)(void *udata, EpollUserContext *ctx) = nullptr;
-    void *epoll_udata_ = nullptr;
+    EpollHandler epoll_init_handler_ = nullptr;
+    EpollHandler epoll_recv_handler_ = nullptr;
+    EpollHandler epoll_send_handler_ = nullptr;
+    EpollHandler epoll_comp_handler_ = nullptr;
+    void *sock_ctx_ = nullptr;
+
+    int EnableNonblocking(int sock_fd);
+    int CreateSocket(const char *ip_addr, uint16_t port,
+                     sockaddr_in *sock_addr);
+    int RecvData(int sock_fd, void *data, size_t size);
+    int SendData(int sock_fd, void *data, size_t size);
 
     int EpollInitialize();
     void EpollSend(EpollCoreContext *context);
@@ -197,5 +212,7 @@ private:
     int EpollCheck(EpollCoreContext *context);
     void EpollComplete(EpollCoreContext *context);
 };
+
+}
 
 #endif // PLUGGED_IN_EPOLL_SOCKET_H
