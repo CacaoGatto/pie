@@ -85,6 +85,7 @@ private:
         }
         ~EpollCoreContext() {
         }
+        static constexpr int kCompletion = -1234;
         inline void SetTaskContext(void *ctx) { task_ctx_ = ctx; }
         inline void *GetTaskContext() const { return task_ctx_; }
         inline EpollBuffer &GetBuffer() { return buffer_; }
@@ -160,7 +161,7 @@ private:
                     return -1;
                 }
             } else if (ret == 0) {
-                return -1;
+                return kCompletion;
             }
             ctrl_size_ -= ret;
             ctrl_ptr_ = (char *)ctrl_ptr_ + ret;
@@ -207,8 +208,8 @@ private:
     int SendData(int sock_fd, void *data, size_t size);
 
     int EpollInitialize();
-    void EpollSend(EpollCoreContext *context);
-    void EpollRecv(EpollCoreContext *context);
+    int EpollSend(EpollCoreContext *context);
+    int EpollRecv(EpollCoreContext *context);
     int EpollCheck(EpollCoreContext *context);
     void EpollComplete(EpollCoreContext *context);
 };

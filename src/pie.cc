@@ -253,9 +253,9 @@ int PieSocket::EpollRetrive() {
             /* Check completion */
             if (EpollCheck(context) > 0) {
                 res_num += 1;
-                continue;
+            } else if (EpollRecv(context) > 0) {
+                res_num += 1;
             }
-            EpollRecv(context);
         } else if (events[i].events & EPOLLOUT) {
             EpollSend(context);
         } else {
@@ -393,7 +393,7 @@ int PieSocket::EpollInitialize() {
     return 0;
 }
 
-void PieSocket::EpollSend(EpollCoreContext *context) {
+int PieSocket::EpollSend(EpollCoreContext *context) {
     int ret = context->SendData();
     if (ret < 0) {
         print_error("Epoll-out failed: SendData()");
@@ -420,12 +420,19 @@ void PieSocket::EpollSend(EpollCoreContext *context) {
             }
         }
     }
+    return 0;
 }
 
-void PieSocket::EpollRecv(EpollCoreContext *context) {
+int PieSocket::EpollRecv(EpollCoreContext *context) {
     int ret = context->RecvData();
+    int fin = 0;
     if (ret < 0) {
-        print_error("Epoll-in failed: RecvData()");
+        if (ret != EpollCoreContext::kCompletion) {
+            print_error("Epoll-in failed: RecvData()");
+            fin = -1;
+        } else {
+            fin = 1;
+        }
         EpollComplete(context);
     } else if (ret > 0) {
         void *next_ctx = epoll_recv_handler_(sock_ctx_,
@@ -449,6 +456,7 @@ void PieSocket::EpollRecv(EpollCoreContext *context) {
             }
         }
     }
+    return fin;
 }
 
 int PieSocket::EpollCheck(EpollCoreContext *context) {
